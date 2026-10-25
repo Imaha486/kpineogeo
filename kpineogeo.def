@@ -1,0 +1,3 @@
+LIBRARY kpineogeo
+EXPORTS
+	kpi_CreateInstance

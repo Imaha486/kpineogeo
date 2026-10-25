@@ -1,0 +1,39 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 zip
+
+      - name: Fetch KbMedia Player SDK headers
+        run: sh scripts/fetch-kpisdk.sh
+
+      - name: Build
+        run: make -j2 all tools linux-tools package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kpineogeo
+          path: |
+            bin/x86/kpineogeo.kpi
+            bin/x64/kpineogeo.kpi
+            dist/*.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip

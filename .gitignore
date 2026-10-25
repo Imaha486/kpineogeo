@@ -1,0 +1,13 @@
+/bin/
+/obj/
+/build*/
+/dist/*.zip
+/third_party/kpisdk/*.h
+# ROM images are never committed
+*.bin
+*.rom
+*.m1
+*.v[0-9]*
+*.zip
+*.wav
+*.log
