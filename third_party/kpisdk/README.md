@@ -1,29 +1,19 @@
-# KbMedia Player Plugin SDK (not included)
+# KbMedia Player Plugin SDK
 
-このディレクトリには KbMedia Player プラグイン SDK (© Kobarin) のヘッダを置きます。
-SDK は再配布条件が明示されていないため、このリポジトリには含めていません。
+KbMedia Player に同梱されている `SDK/kpisdk.7z`（2017/03/06 版、本体 Ver 3.02 用）のうち、
+デコーダプラグインのビルドに必要なファイルです。
 
-必要なファイル (UTF-8 に変換したもの):
+- `kpi.h` / `kpi_decoder.h` / `kpi_impl.h` / `kmp_pi.h` / `kpi.cpp`
+- 著作権は KbMedia Player の作者 Kobarin 氏にあります（© Kobarin）
+- 文字コードを CP932 から UTF-8 に変換しただけで、内容は変更していません
+  （MSVC では `/utf-8` を付けてビルドします）
 
-- `kpi.h`
-- `kpi_decoder.h`
-- `kpi_impl.h`
-- `kmp_pi.h`
-
-## 用意のしかた
-
-KbMedia Player の配布物に含まれる `SDK/kpisdk.7z` から取り出す (推奨):
+SDK を新しい版に差し替える場合は、KbMedia Player の配布物に含まれる `kpisdk.7z` を展開し、
+上記ファイルを UTF-8 に変換してこのディレクトリに上書きしてください。
 
 ```sh
-scripts/fetch-kpisdk.sh /path/to/KbMediaPlayer/SDK/kpisdk.7z
+7z x kpisdk.7z -otmp
+for f in kpi.h kpi_decoder.h kpi_impl.h kmp_pi.h kpi.cpp; do
+  iconv -f CP932 -t UTF-8 "$(find tmp -name $f)" > $f
+done
 ```
-
-引数なしで実行すると、[auPiECE.kpi](https://github.com/autch/auPiECE.kpi) に含まれている
-UTF-8 版 (SDK 2017/03/06 版) をダウンロードします。
-
-```sh
-scripts/fetch-kpisdk.sh
-```
-
-Windows で手作業で用意する場合は、`kpisdk.7z` を展開して上記 4 ファイルを
-UTF-8 で保存し直してこのディレクトリに置いてください。

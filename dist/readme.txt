@@ -1,4 +1,4 @@
-kpineogeo.kpi  v1.02  -  NEOGEO サウンドROM (M1 + V) 再生プラグイン for KbMedia Player
+kpineogeo.kpi  v1.04  -  NEOGEO サウンドROM (M1 + V) 再生プラグイン for KbMedia Player
 ==========================================================================
 
 ■ 概要
@@ -48,18 +48,23 @@ kpineogeo.kpi  v1.02  -  NEOGEO サウンドROM (M1 + V) 再生プラグイン f
   ADPCM で流す BGM も検出できるよう、初回の検出では V ROM も読み込んで実際に
   音を合成します(1タイトル数秒～十数秒。2回目以降はキャッシュを使います)。
 
-■ 設定 (kpineogeo.ini)
-  kpineogeo.kpi と同じフォルダに kpineogeo.ini を置くと設定を変えられます。
-  同梱の kpineogeo.ini のサンプルを参照してください。
-  [General]
-    ListMode=0      0=BGM+ジングル / 1=効果音・ボイスも含め全部
-    Dedupe=1        同じ曲になるコードをまとめる
-    Gain=1.5        出力音量の倍率
-    ScanSeconds=6   BGM とみなすまでの秒数
-    SampleRate=48000 本体から周波数の指定がないときの出力周波数
-    Cache=1         検出結果をキャッシュする
-    Debug=0         1 にすると %TEMP%\kpineogeo.log に動作ログを出す(不具合報告用)
-  [M1のCRC32(8桁16進大文字)]   … ゲームごとの設定
+■ 設定
+  全体の設定は KbMedia Player の「ツール」→「プラグイン設定」→ kpineogeo.kpi で
+  変更できます(設定は KbMedia Player 本体が保存します)。
+    曲一覧に含めるもの        BGM とジングル / 効果音・ボイスも含めて全部
+    同じ曲になるコードをまとめる
+    音量の倍率                既定 1.5
+    BGM とみなす秒数          既定 6 秒
+    既定の出力周波数          本体から周波数の指定がないとき(既定 48000Hz)
+    検出結果をキャッシュする
+    動作ログを出力する        %TEMP%\kpineogeo.log に出力(不具合報告用)
+  設定の変更は、次にファイルを開いたときから反映されます。
+  ※ v1.03 までの kpineogeo.ini の [General] セクションは使われなくなりました。
+
+■ ゲームごとの設定 (kpineogeo.ini)
+  kpineogeo.kpi と同じフォルダに kpineogeo.ini を置くと、ゲームごとに曲名などを
+  指定できます。同梱の kpineogeo.ini のサンプルを参照してください。
+  [M1のCRC32(8桁16進大文字)]
     Album=ゲーム名
     Title1C=曲名    (1C はサウンドコード 16進)
     Codes=04,05,18:3200   曲リストを手動指定(":ミリ秒" を付けると非ループ曲)
@@ -67,14 +72,15 @@ kpineogeo.kpi  v1.02  -  NEOGEO サウンドROM (M1 + V) 再生プラグイン f
                     "Init=" と空で書くと何も送らない
     Prefix=         毎回曲コードの前に送るコマンド
     Range=02,EF     検出するコードの範囲
-  ※ M1 の CRC32 はトラックのコメント欄には出ません。MAME の情報(例: 224-m1.bin の
-    CRC32 は 364D6F96)を使ってください。
+    Crypt=auto      暗号化 M1 の扱い (auto / none / cmc50)
+  ※ M1 の CRC32 はトラックのコメント欄に表示されます(例: 224-m1.bin は 364D6F96)。
 
 ■ 制限
   ・V ROM の名前が M1 と対応していない場合(例: sprit_m1.rom + 224-v1.bin)は、
     同じフォルダ/ZIP 内の "v1","v2"… で終わるファイルを探して使います。
-  ・M1/V が暗号化されている後期タイトル(CMC50 系: KOF2000 以降の一部など)は
-    そのままでは鳴りません。復号済み ROM を使ってください。
+  ・暗号化された後期タイトル(KOF2000～2003、メタルスラッグ4/5、SVC CHAOS、
+    サムライスピリッツ零/零SP など)は自動で復号して再生します。
+    V ROM の復号は MAME に登録されているセットのみ対応です(M1 の CRC32 で判別)。
   ・曲の検出はヒューリスティックです。ドライバによっては拾えない曲や、
     逆に余計なコードが混ざることがあります。その場合は Codes= で指定してください。
   ・68000 側の処理(ゲーム中の音量制御など)は再現しません。
@@ -82,10 +88,14 @@ kpineogeo.kpi  v1.02  -  NEOGEO サウンドROM (M1 + V) 再生プラグイン f
 ■ 使用ライブラリ
   ymfm      (c) 2021 Aaron Giles   BSD 3-Clause License
   z80       (c) 2019 Nicolas Allemand  MIT License (16bit I/O ポート対応に改変)
-  KbMedia Player Plugin SDK (c) Kobarin
+  CMC50/NEO-PCM2 復号  MAME (S. Smith, David Haywood, Fabio Priuli)  BSD 3-Clause License
+  KbMedia Player Plugin SDK (c) Kobarin (ソースに同梱)
   各ライセンス文は licenses フォルダにあります。
 
 ■ 更新履歴
+  v1.04  全体の設定を KbMedia Player のプラグイン設定画面に移動 / SDK を同梱し
+         ビルド時のダウンロードを廃止 / コメント欄に M1 の CRC32 を表示
+  v1.03  暗号化タイトル(KOF2002 等)に対応 / 暗号化 M1 で固まる問題を修正
   v1.02  SNK 標準系ドライバ(パルスター、アイアンクラッド等)の曲が出ない問題を修正
          (0x07 の自動判定、ADPCM ストリーム BGM の検出、089-v1.v1 形式の V ROM 名)
   v1.01  ZIP 等のアーカイブ内の M1 が再生開始しない問題を修正

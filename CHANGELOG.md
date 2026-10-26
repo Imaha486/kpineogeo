@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.04 (2026-10-26)
+
+- 全体の設定（曲一覧の範囲・まとめ・音量・BGM判定秒数・既定周波数・キャッシュ・ログ）を
+  SDK の IKpiConfig で実装し、KbMedia Player の「プラグイン設定」画面から変更できるようにした
+  - ini は `[General]` を廃止し、ゲームごとの設定（`[M1のCRC32]`）だけになった
+- KbMedia Player 同梱の SDK（kpisdk.7z、2017/03/06 版）をリポジトリに同梱し、
+  ビルド時に外部サーバーからダウンロードする処理（scripts/fetch-kpisdk.sh）を廃止
+- auPiECE.kpi 由来だった `kpi_mingw_uuid.h` と検証用ホスト `tools/kpihost.cpp` を独自に書き直した
+  （`src/kpi_gcc_uuid.h` は SDK の GUID から生成）
+- トラックのコメント欄に M1 の CRC32（ゲームごとの ini セクション名）を表示
+
+## v1.03 (2026-10-25)
+
+- 暗号化された後期タイトル（CMC50 の M1 / NEO-PCM2 の V: KOF2000〜2003、メタルスラッグ4・5、
+  SVC CHAOS、サムライスピリッツ零／零SP、MATRIMELEE、ROTD、ぱんにゃ 等）に対応
+  - M1 は CMC50 の復号を自動で行う（既知のセットは M1 の CRC32 で判定、未知のものは復号結果を見て判定）
+  - V は既知のセットについて NEO-PCM2 の復号を行う
+  - ini の `Crypt=none` / `Crypt=cmc50` で上書き可能
+- 暗号化された M1 を開くと固まる問題を修正（Z80 コアが未定義命令ごとに stderr へ出力していた）
+- 曲の検出に 90 秒の上限を設けた（異常な ROM で固まらないように）
+
 ## v1.02 (2026-10-25)
 
 - SNK 標準系サウンドドライバ（"by Mr.Pac" / "by MAKOTO" など: パルスター、アイアンクラッド等）で

@@ -2,7 +2,6 @@
 /obj/
 /build*/
 /dist/*.zip
-/third_party/kpisdk/*.h
 # ROM images are never committed
 *.bin
 *.rom

@@ -1240,7 +1240,7 @@ void exec_opcode(z80* const z, uint8_t opcode) {
   case 0xDD: exec_opcode_ddfd(z, nextb(z), &z->ix); break;
   case 0xFD: exec_opcode_ddfd(z, nextb(z), &z->iy); break;
 
-  default: fprintf(stderr, "unknown opcode %02X\n", opcode); break;
+  default: break;
   }
 }
 
@@ -1490,7 +1490,7 @@ void exec_opcode_dcb(z80* const z, uint8_t opcode, uint16_t addr) {
   case 2: result = val & ~(1 << y_); break; // res y, (iz+d)
   case 3: result = val | (1 << y_); break; // set y, (iz+d)
 
-  default: fprintf(stderr, "unknown XYCB opcode: %02X\n", opcode); break;
+  default: break;
   }
 
   // ld r[z], rot[y] (iz+d)
@@ -1766,7 +1766,7 @@ void exec_opcode_ed(z80* const z, uint8_t opcode) {
     z->mem_ptr = get_hl(z) + 1;
   } break; // rld
 
-  default: fprintf(stderr, "unknown ED opcode: %02X\n", opcode); break;
+  default: break;
   }
 }
 

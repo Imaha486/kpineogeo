@@ -1,6 +1,4 @@
 # MSVC build (Visual Studio 2022)
-#   scripts/fetch-kpisdk.sh  (or put kpi.h / kpi_decoder.h / kpi_impl.h / kmp_pi.h
-#                             converted to UTF-8 into third_party/kpisdk/)
 #   cmake -S . -B build-x64 -A x64   && cmake --build build-x64 --config Release
 #   cmake -S . -B build-x86 -A Win32 && cmake --build build-x86 --config Release
 cmake_minimum_required(VERSION 3.20)
@@ -10,12 +8,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kpisdk/kpi.h)
-  message(FATAL_ERROR "KbMedia Player SDK headers not found in third_party/kpisdk (see third_party/kpisdk/README.md)")
-endif()
-
 add_library(kpineogeo SHARED
-  src/kpineogeo.cpp src/neoplayer.cpp src/songscan.cpp src/neosnd.cpp src/romfind.cpp
+  src/kpineogeo.cpp src/kpi_sdk.cpp src/neoplayer.cpp src/songscan.cpp src/neosnd.cpp src/romfind.cpp src/neocrypt.cpp
   third_party/ymfm/ymfm_opn.cpp third_party/ymfm/ymfm_adpcm.cpp third_party/ymfm/ymfm_ssg.cpp
   third_party/z80/z80.c
   kpineogeo.def)

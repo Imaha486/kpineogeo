@@ -52,6 +52,24 @@
      z->mem_ptr = (port + 1) | (z->a << 8);
    } break; // out (n), a
  
+@@ -1240,7 +1240,7 @@
+   case 0xDD: exec_opcode_ddfd(z, nextb(z), &z->ix); break;
+   case 0xFD: exec_opcode_ddfd(z, nextb(z), &z->iy); break;
+ 
+-  default: fprintf(stderr, "unknown opcode %02X\n", opcode); break;
++  default: break;
+   }
+ }
+ 
+@@ -1490,7 +1490,7 @@
+   case 2: result = val & ~(1 << y_); break; // res y, (iz+d)
+   case 3: result = val | (1 << y_); break; // set y, (iz+d)
+ 
+-  default: fprintf(stderr, "unknown XYCB opcode: %02X\n", opcode); break;
++  default: break;
+   }
+ 
+   // ld r[z], rot[y] (iz+d)
 @@ -1632,15 +1632,15 @@
      }
      break; // indr
@@ -75,6 +93,15 @@
 +    z->port_out(z, get_bc(z), z->a);
      z->mem_ptr = get_bc(z) + 1;
      break; // out (c), a
+ 
+@@ -1766,7 +1766,7 @@
+     z->mem_ptr = get_hl(z) + 1;
+   } break; // rld
+ 
+-  default: fprintf(stderr, "unknown ED opcode: %02X\n", opcode); break;
++  default: break;
+   }
+ }
  
 --- a/z80.h
 +++ b/z80.h

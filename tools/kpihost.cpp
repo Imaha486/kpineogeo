@@ -1,78 +1,156 @@
-// kpihost - load kpineogeo.kpi like KbMedia Player does and render tracks to WAV
-// usage: kpihost plugin.kpi path\to\224-m1.bin [track(1-based, 0=list)] [seconds] [out.wav] [rate] [seekSec]
+// kpihost - minimal KbMedia Player stand-in for testing kpineogeo.kpi (Windows / Wine)
+//
+//   kpihost [-k plugin.kpi] [-r rate] [-s seconds] [-p seek_seconds] [-o out.wav]
+//           [-c Key=Value ...] m1file [track]
+//
+//   track omitted : list the tracks (tag-only open, like the Media Explorer)
+//   track given   : open for playback, render, optionally write a 16-bit WAV
+//   -c Key=Value  : plugin setting (General section) served through IKpiConfig
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 #include "kpi.h"
 #include "kpi_decoder.h"
 #include "kpi_impl.h"
-#include "kpi_mingw_uuid.h"
+#include "kpi_gcc_uuid.h"
 
-class DiskFile : public KbKpiFileImpl
-{
-public:
-    std::vector<BYTE> d; UINT64 pos = 0; std::wstring name;
-    DWORD WINAPI Read(void* p, DWORD n) override
-    {
-        if (pos >= d.size()) return 0;
-        DWORD k = (DWORD)std::min<UINT64>(n, d.size() - pos);
-        memcpy(p, d.data() + pos, k); pos += k; return k;
-    }
-    UINT64 WINAPI Seek(INT64 i, DWORD o) override
-    {
-        INT64 b = o == FILE_BEGIN ? 0 : o == FILE_CURRENT ? (INT64)pos : (INT64)d.size();
-        if (b + i < 0 || (UINT64)(b + i) > d.size()) return KPI_FILE_EOF;
-        return pos = b + i;
-    }
-    UINT64 WINAPI GetSize() override { return d.size(); }
-    DWORD WINAPI GetFileName(wchar_t* p, DWORD sz) override
-    {
-        DWORD need = (DWORD)((name.size() + 1) * 2);
-        if (sz < need) { p[0] = 0; return need; }
-        wcscpy(p, name.c_str()); return need;
-    }
-};
+namespace {
 
-static DiskFile* LoadFile(const std::wstring& path, const std::wstring& name)
+std::wstring dirOf(const std::wstring& p)
 {
-    FILE* f = _wfopen(path.c_str(), L"rb");
-    if (!f) return nullptr;
-    DiskFile* df = new DiskFile(); df->name = name;
-    BYTE buf[65536]; size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) df->d.insert(df->d.end(), buf, buf + n);
-    fclose(f);
-    return df;
+    size_t s = p.find_last_of(L"\\/");
+    return s == std::wstring::npos ? L"." : p.substr(0, s);
+}
+std::wstring nameOf(const std::wstring& p)
+{
+    size_t s = p.find_last_of(L"\\/");
+    return s == std::wstring::npos ? p : p.substr(s + 1);
+}
+DWORD putString(const std::wstring& s, wchar_t* out, DWORD bytes)
+{
+    const DWORD need = DWORD((s.size() + 1) * sizeof(wchar_t));
+    if (bytes < need) { if (bytes >= 2) out[0] = 0; return need; }
+    memcpy(out, s.c_str(), need);
+    return need;
 }
 
-class DiskFolder : public KbKpiFolderImpl
+// whole file in memory; good enough for ROM images
+class MemFile : public KbKpiFileImpl
 {
 public:
-    std::wstring dir; std::vector<std::wstring> files;
-    DWORD WINAPI GetFolderName(wchar_t* p, DWORD sz) override
+    static MemFile* load(const std::wstring& path)
     {
-        std::wstring n = dir.substr(dir.find_last_of(L"\\/") + 1);
-        DWORD need = (DWORD)((n.size() + 1) * 2); if (sz < need) { p[0] = 0; return need; }
-        wcscpy(p, n.c_str()); return need;
+        HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return nullptr;
+        LARGE_INTEGER size;
+        GetFileSizeEx(h, &size);
+        MemFile* f = new MemFile();
+        f->name_ = nameOf(path);
+        f->data_.resize((size_t)size.QuadPart);
+        DWORD got = 0;
+        ReadFile(h, f->data_.data(), (DWORD)f->data_.size(), &got, nullptr);
+        CloseHandle(h);
+        return f;
     }
-    DWORD WINAPI EnumFiles(DWORD i, wchar_t* p, DWORD sz, DWORD) override
+    DWORD WINAPI Read(void* buf, DWORD n) override
     {
-        if (i >= files.size()) { p[0] = 0; return 0; }
-        DWORD need = (DWORD)((files[i].size() + 1) * 2); if (sz < need) { p[0] = 0; return need; }
-        wcscpy(p, files[i].c_str()); return need;
+        const UINT64 left = pos_ < data_.size() ? data_.size() - pos_ : 0;
+        const DWORD k = (DWORD)(n < left ? n : left);
+        memcpy(buf, data_.data() + pos_, k);
+        pos_ += k;
+        return k;
     }
-    BOOL WINAPI OpenFile(const wchar_t* n, IKpiFile** pp) override
+    UINT64 WINAPI Seek(INT64 off, DWORD origin) override
     {
-        *pp = LoadFile(dir + L"\\" + n, n); return *pp != nullptr;
+        INT64 base = origin == FILE_CURRENT ? (INT64)pos_ : origin == FILE_END ? (INT64)data_.size() : 0;
+        INT64 np = base + off;
+        if (np < 0 || (UINT64)np > data_.size()) return KPI_FILE_EOF;
+        return pos_ = (UINT64)np;
     }
-    BOOL WINAPI OpenFolder(const wchar_t*, IKpiFolder** pp) override { *pp = nullptr; return FALSE; }
+    UINT64 WINAPI GetSize() override { return data_.size(); }
+    DWORD WINAPI GetFileName(wchar_t* out, DWORD bytes) override { return putString(name_, out, bytes); }
+private:
+    std::vector<BYTE> data_;
+    UINT64 pos_ = 0;
+    std::wstring name_;
 };
 
-class PrintTags : public KbKpiUnknownImpl<IKpiTagInfo>
+// a plain directory
+class DirFolder : public KbKpiFolderImpl
 {
 public:
-    PrintTags() {}
+    explicit DirFolder(const std::wstring& dir) : dir_(dir)
+    {
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) return;
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) names_.push_back(fd.cFileName);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    DWORD WINAPI GetFolderName(wchar_t* out, DWORD bytes) override { return putString(nameOf(dir_), out, bytes); }
+    DWORD WINAPI EnumFiles(DWORD i, wchar_t* out, DWORD bytes, DWORD) override
+    {
+        if (i >= names_.size()) { if (bytes >= 2) out[0] = 0; return 0; }
+        return putString(names_[i], out, bytes);
+    }
+    BOOL WINAPI OpenFile(const wchar_t* name, IKpiFile** pp) override
+    {
+        *pp = MemFile::load(dir_ + L"\\" + name);
+        return *pp != nullptr;
+    }
+    BOOL WINAPI OpenFolder(const wchar_t*, IKpiFolder** pp) override { *pp = nullptr; return FALSE; }
+private:
+    std::wstring dir_;
+    std::vector<std::wstring> names_;
+};
+
+// settings given on the command line
+class MapConfig : public KbKpiUnknownImpl<IKpiConfig>
+{
+public:
+    std::map<std::wstring, std::wstring> values;
+    const std::wstring* find(const wchar_t* key) const
+    {
+        auto it = values.find(key);
+        return it == values.end() ? nullptr : &it->second;
+    }
+    void   WINAPI SetInt(const wchar_t*, const wchar_t* k, INT64 v) override { values[k] = std::to_wstring(v); }
+    INT64  WINAPI GetInt(const wchar_t*, const wchar_t* k, INT64 d) override { auto v = find(k); return v ? _wtoi64(v->c_str()) : d; }
+    void   WINAPI SetFloat(const wchar_t*, const wchar_t* k, double v) override { values[k] = std::to_wstring(v); }
+    double WINAPI GetFloat(const wchar_t*, const wchar_t* k, double d) override { auto v = find(k); return v ? _wtof(v->c_str()) : d; }
+    void   WINAPI SetStr(const wchar_t*, const wchar_t* k, const wchar_t* v) override { values[k] = v; }
+    DWORD  WINAPI GetStr(const wchar_t*, const wchar_t* k, wchar_t* out, DWORD bytes, const wchar_t* d) override
+    {
+        auto v = find(k);
+        return putString(v ? *v : std::wstring(d ? d : L""), out, bytes);
+    }
+    void   WINAPI SetBin(const wchar_t*, const wchar_t*, const BYTE*, DWORD) override {}
+    DWORD  WINAPI GetBin(const wchar_t*, const wchar_t*, BYTE* p, DWORD n) override { memset(p, 0, n); return 0; }
+};
+
+class Provider : public KbKpiUnknownImpl<IKpiUnkProvider>
+{
+public:
+    explicit Provider(MapConfig* c) : cfg_(c) {}
+    DWORD WINAPI CreateInstance(REFIID riid, void*, void*, void*, void*, void** out) override
+    {
+        if (IsEqualIID(riid, IID_IKpiConfig)) { cfg_->AddRef(); *out = static_cast<IKpiConfig*>(cfg_); return 1; }
+        *out = nullptr;
+        return 0;
+    }
+private:
+    MapConfig* cfg_;
+};
+
+// prints the tags the plugin reports
+class TagPrinter : public KbKpiUnknownImpl<IKpiTagInfo>
+{
+public:
     DWORD WINAPI GetTagInfo(IKpiFile*, IKpiFolder*, DWORD, DWORD) override { return 1; }
     DWORD WINAPI GetValue(const wchar_t*, wchar_t* p, int) override { p[0] = 0; return 0; }
     void WINAPI SetOverwrite(BOOL) override {}
@@ -81,82 +159,142 @@ public:
     void WINAPI aSetValueW(const char*, int, const wchar_t*, int) override {}
     void WINAPI aSetValueU8(const char*, int, const char*, int) override {}
     void WINAPI wSetValueA(const wchar_t*, int, const char*, int) override {}
-    void WINAPI wSetValueW(const wchar_t* n, int, const wchar_t* v, int) override { wprintf(L"   %ls=%ls\n", n, v); }
+    void WINAPI wSetValueW(const wchar_t* n, int, const wchar_t* v, int) override { wprintf(L"    %ls = %ls\n", n, v); }
     void WINAPI wSetValueU8(const wchar_t*, int, const char*, int) override {}
     void WINAPI u8SetValueA(const char*, int, const char*, int) override {}
     void WINAPI u8SetValueW(const char*, int, const wchar_t*, int) override {}
     void WINAPI u8SetValueU8(const char*, int, const char*, int) override {}
 };
 
+// prints what the plugin offers for the settings dialog
+class ConfigLister : public KbKpiUnknownImpl<IKpiConfigEnumerator>
+{
+public:
+    BOOL WINAPI EnumSection(const KPI_CFG_SECTION* s) override { wprintf(L"[%ls] %ls\n", s->cszSection, s->cszSecDesc ? s->cszSecDesc : L""); return TRUE; }
+    BOOL WINAPI EnumKey(const KPI_CFG_KEY* k) override
+    {
+        wprintf(L"  %-12ls type=%lu default=%ls  (%ls)\n", k->cszKey, k->dwType, k->cszDefault ? k->cszDefault : L"",
+                k->cszKeyDesc ? k->cszKeyDesc : L"");
+        return TRUE;
+    }
+};
+
+void writeWav(const wchar_t* path, const std::vector<float>& pcm, DWORD rate)
+{
+    FILE* f = _wfopen(path, L"wb");
+    if (!f) return;
+    const DWORD bytes = DWORD(pcm.size() * 2);
+    auto u32 = [&](DWORD v) { fwrite(&v, 4, 1, f); };
+    auto u16 = [&](WORD v) { fwrite(&v, 2, 1, f); };
+    fwrite("RIFF", 1, 4, f); u32(36 + bytes); fwrite("WAVEfmt ", 1, 8, f);
+    u32(16); u16(1); u16(2); u32(rate); u32(rate * 4); u16(4); u16(16);
+    fwrite("data", 1, 4, f); u32(bytes);
+    for (float x : pcm)
+    {
+        int v = (int)(x * 32767.0f);
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        u16((WORD)(short)v);
+    }
+    fclose(f);
+}
+
+} // namespace
+
 int wmain(int argc, wchar_t** argv)
 {
-    if (argc < 3) return 2;
-    HMODULE h = LoadLibraryW(argv[1]);
-    if (!h) { printf("LoadLibrary failed %lu\n", GetLastError()); return 1; }
-    typedef HRESULT (WINAPI *PFN)(REFIID, void**, IKpiUnknown*);
-    PFN create = (PFN)GetProcAddress(h, "kpi_CreateInstance");
-    IKpiDecoderModule* mod = nullptr;
-    if (!create || create(IID_IKpiDecoderModule, (void**)&mod, nullptr) != S_OK) { printf("create failed\n"); return 1; }
-    const KPI_DECODER_MODULEINFO* mi; mod->GetModuleInfo(&mi);
-    wprintf(L"exts=%ls multi=%ls\n", mi->cszSupportExts, mi->cszMultiSongExts);
+    std::wstring kpi = L"kpineogeo.kpi", out, m1;
+    DWORD rate = 44100, track = 0;
+    double seconds = 10, seekSec = 0;
+    MapConfig* cfg = new MapConfig();
+    for (int i = 1; i < argc; i++)
+    {
+        std::wstring a = argv[i];
+        if (a == L"-k" && i + 1 < argc) kpi = argv[++i];
+        else if (a == L"-r" && i + 1 < argc) rate = _wtoi(argv[++i]);
+        else if (a == L"-s" && i + 1 < argc) seconds = _wtof(argv[++i]);
+        else if (a == L"-p" && i + 1 < argc) seekSec = _wtof(argv[++i]);
+        else if (a == L"-o" && i + 1 < argc) out = argv[++i];
+        else if (a == L"-c" && i + 1 < argc)
+        {
+            std::wstring kv = argv[++i];
+            size_t eq = kv.find(L'=');
+            if (eq != std::wstring::npos) cfg->values[kv.substr(0, eq)] = kv.substr(eq + 1);
+        }
+        else if (m1.empty()) m1 = a;
+        else track = _wtoi(a.c_str());
+    }
+    if (m1.empty()) { fwprintf(stderr, L"usage: kpihost [-k kpi] [-r rate] [-s sec] [-p seek] [-o wav] [-c Key=Value] m1 [track]\n"); return 2; }
 
-    std::wstring path = argv[2];
-    size_t s = path.find_last_of(L"\\/");
-    DiskFolder* folder = new DiskFolder(); folder->dir = path.substr(0, s);
-    WIN32_FIND_DATAW fd; HANDLE fh = FindFirstFileW((folder->dir + L"\\*").c_str(), &fd);
-    if (fh != INVALID_HANDLE_VALUE) { do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) folder->files.push_back(fd.cFileName); } while (FindNextFileW(fh, &fd)); FindClose(fh); }
+    HMODULE dll = LoadLibraryW(kpi.c_str());
+    if (!dll) { fwprintf(stderr, L"cannot load %ls (%lu)\n", kpi.c_str(), GetLastError()); return 1; }
+    typedef HRESULT(WINAPI* CreateFn)(REFIID, void**, IKpiUnknown*);
+    CreateFn create = (CreateFn)GetProcAddress(dll, "kpi_CreateInstance");
+    Provider* provider = new Provider(cfg);
+    IKpiDecoderModule* module = nullptr;
+    if (!create || create(IID_IKpiDecoderModule, (void**)&module, provider) != S_OK || !module)
+    {
+        fwprintf(stderr, L"kpi_CreateInstance failed\n");
+        return 1;
+    }
+    const KPI_DECODER_MODULEINFO* info = nullptr;
+    module->GetModuleInfo(&info);
+    wprintf(L"%ls\n  exts %ls, settings %lu\n", info->cszDescription, info->cszSupportExts, info->dwSupportConfig);
+    if (info->dwSupportConfig)
+    {
+        ConfigLister lister;
+        module->EnumConfig(&lister);
+    }
 
-    int track = argc > 3 ? _wtoi(argv[3]) : 0;
-    double sec = argc > 4 ? _wtof(argv[4]) : 10;
-    DWORD rate = argc > 6 ? _wtoi(argv[6]) : 44100;
-    double seekSec = argc > 7 ? _wtof(argv[7]) : 0;
+    DirFolder* folder = new DirFolder(dirOf(m1));
+    MemFile* file = MemFile::load(m1);
+    if (!file) { fwprintf(stderr, L"cannot read %ls\n", m1.c_str()); return 1; }
 
-    DiskFile* file = LoadFile(path, path.substr(s + 1));
-    KPI_MEDIAINFO req; kpi_InitMediaInfo(&req); req.dwSampleRate = rate;
+    KPI_MEDIAINFO req;
+    kpi_InitMediaInfo(&req);
+    req.dwSampleRate = rate;
     IKpiDecoder* dec = nullptr;
-    DWORD t0 = GetTickCount();
-    DWORD count = mod->Open(track ? &req : nullptr, file, folder, &dec);
-    printf("Open -> %lu tracks (%lu ms)\n", count, GetTickCount() - t0);
-    if (!count) return 1;
-    PrintTags tags;
+    const DWORD t0 = GetTickCount();
+    const DWORD count = module->Open(track ? &req : nullptr, file, folder, &dec);
+    wprintf(L"Open: %lu tracks (%lu ms)\n", count, GetTickCount() - t0);
+    if (!count || !dec) return 1;
+
+    TagPrinter tags;
     if (track == 0)
     {
         dec->Select(0, nullptr, &tags, KPI_TAGGET_FLAG_ALL);
-        for (DWORD i = 1; i <= count; i++) { printf("#%lu\n", i); dec->Select(i, nullptr, &tags, KPI_TAGGET_FLAG_TITLE | KPI_TAGGET_FLAG_COMMENT); }
-        return 0;
+        for (DWORD i = 1; i <= count; i++)
+        {
+            wprintf(L"#%lu\n", i);
+            dec->Select(i, nullptr, &tags, KPI_TAGGET_FLAG_TITLE | KPI_TAGGET_FLAG_COMMENT);
+        }
     }
-    const KPI_MEDIAINFO* info = nullptr;
-    dec->Select(track, &info, &tags, KPI_TAGGET_FLAG_ALL);
-    printf("rate=%lu bits=%d ch=%lu len=%lld loop=%lld\n", info->dwSampleRate, info->nBitsPerSample, info->dwChannels,
-           (long long)info->qwLength, (long long)info->qwLoop);
-    t0 = GetTickCount();
-    UINT64 sp = dec->Seek((UINT64)(seekSec * info->dwSampleRate), KPI_MEDIAINFO::SEEK_FLAGS_SAMPLE);
-    printf("seek -> %llu (%lu ms)\n", (unsigned long long)sp, GetTickCount() - t0);
-    std::vector<float> pcm;
-    UINT64 want = (UINT64)(sec * info->dwSampleRate);
-    std::vector<float> buf(1000 * 2);
-    t0 = GetTickCount();
-    while (pcm.size() / 2 < want)
+    else
     {
-        DWORD r = dec->Render((BYTE*)buf.data(), 1000);
-        pcm.insert(pcm.end(), buf.begin(), buf.begin() + r * 2);
-        if (r < 1000) { printf("ended at %.2f s\n", pcm.size() / 2.0 / info->dwSampleRate); break; }
+        const KPI_MEDIAINFO* mi = nullptr;
+        if (dec->Select(track, &mi, &tags, KPI_TAGGET_FLAG_ALL) == 0 || !mi) { fwprintf(stderr, L"Select failed\n"); return 1; }
+        wprintf(L"%lu Hz, %d bit, %lu ch, length %lld, loop %lld\n", mi->dwSampleRate, mi->nBitsPerSample,
+                mi->dwChannels, (long long)mi->qwLength, (long long)mi->qwLoop);
+        DWORD t1 = GetTickCount();
+        const UINT64 at = dec->Seek((UINT64)(seekSec * mi->dwSampleRate), KPI_MEDIAINFO::SEEK_FLAGS_SAMPLE);
+        wprintf(L"Seek -> %llu (%lu ms)\n", (unsigned long long)at, GetTickCount() - t1);
+        std::vector<float> pcm, chunk(2048 * 2);
+        const size_t want = (size_t)(seconds * mi->dwSampleRate);
+        t1 = GetTickCount();
+        while (pcm.size() / 2 < want)
+        {
+            const DWORD got = dec->Render((BYTE*)chunk.data(), 2048);
+            pcm.insert(pcm.end(), chunk.begin(), chunk.begin() + got * 2);
+            if (got < 2048) { wprintf(L"end of track at %.2f s\n", pcm.size() / 2.0 / mi->dwSampleRate); break; }
+        }
+        float peak = 0;
+        for (float x : pcm) peak = (x > peak) ? x : (-x > peak ? -x : peak);
+        wprintf(L"rendered %.1f s in %lu ms, peak %.3f\n", pcm.size() / 2.0 / mi->dwSampleRate, GetTickCount() - t1, peak);
+        if (!out.empty()) writeWav(out.c_str(), pcm, mi->dwSampleRate);
     }
-    printf("render %.1f s in %lu ms\n", pcm.size() / 2.0 / info->dwSampleRate, GetTickCount() - t0);
-    float peak = 0; for (float x : pcm) peak = std::max(peak, x < 0 ? -x : x);
-    printf("peak=%.3f\n", peak);
-    if (argc > 5 && argv[5][0])
-    {
-        FILE* f = _wfopen(argv[5], L"wb");
-        DWORD ds = (DWORD)pcm.size() * 2, t;
-        WORD w;
-        fwrite("RIFF", 1, 4, f); t = 36 + ds; fwrite(&t, 4, 1, f); fwrite("WAVEfmt ", 1, 8, f);
-        t = 16; fwrite(&t, 4, 1, f); w = 1; fwrite(&w, 2, 1, f); w = 2; fwrite(&w, 2, 1, f);
-        fwrite(&info->dwSampleRate, 4, 1, f); t = info->dwSampleRate * 4; fwrite(&t, 4, 1, f); w = 4; fwrite(&w, 2, 1, f); w = 16; fwrite(&w, 2, 1, f);
-        fwrite("data", 1, 4, f); fwrite(&ds, 4, 1, f);
-        for (float x : pcm) { int v = (int)(x * 32767); v = v > 32767 ? 32767 : v < -32768 ? -32768 : v; short sv = (short)v; fwrite(&sv, 2, 1, f); }
-        fclose(f);
-    }
-    dec->Release(); mod->Release();
+    dec->Release();
+    module->Release();
+    file->Release();
+    folder->Release();
     return 0;
 }

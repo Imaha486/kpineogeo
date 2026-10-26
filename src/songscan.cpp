@@ -1,6 +1,7 @@
 #include "songscan.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -158,8 +159,11 @@ std::vector<NeoSong> NeoScanSongs(const NeoRomSet& roms, const NeoDriverProfile&
     const uint64_t silentEnd = RATE * 2;        // silent (and no key-on) for 2 s -> finished
     const bool haveV = !roms.va.empty();
 
+    // safety net: never keep the player busy for more than ~90 s, whatever the ROM does
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
     RunParallel(codes.size(), threads, [&](NeoSound& ns, size_t i)
     {
+        if (std::chrono::steady_clock::now() > deadline) return;
         const uint8_t code = (uint8_t)codes[i];
         if (!QuickActive(ns, init, prof, code)) return;
 

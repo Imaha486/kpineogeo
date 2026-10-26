@@ -3,12 +3,12 @@
 #   make tools      -> bin/kpihost32.exe, bin/kpihost64.exe (test host)
 #   make linux-tools-> bin/rip, bin/scan (native test tools, no SDK needed)
 #   make package    -> dist/kpineogeo_vX.XX.zip
-VERSION = 1.02
+VERSION = 1.04
 
 SDK  = third_party/kpisdk
-SRCS = src/kpineogeo.cpp src/neoplayer.cpp src/songscan.cpp src/neosnd.cpp src/romfind.cpp \
+SRCS = src/kpineogeo.cpp src/kpi_sdk.cpp src/neoplayer.cpp src/songscan.cpp src/neosnd.cpp src/romfind.cpp src/neocrypt.cpp \
        third_party/ymfm/ymfm_opn.cpp third_party/ymfm/ymfm_adpcm.cpp third_party/ymfm/ymfm_ssg.cpp
-CORE = src/neoplayer.cpp src/songscan.cpp src/neosnd.cpp src/romfind.cpp \
+CORE = src/neoplayer.cpp src/songscan.cpp src/neosnd.cpp src/romfind.cpp src/neocrypt.cpp \
        third_party/ymfm/ymfm_opn.cpp third_party/ymfm/ymfm_adpcm.cpp third_party/ymfm/ymfm_ssg.cpp
 INC  = -Isrc -Ithird_party/ymfm -Ithird_party/z80 -I$(SDK)
 CXXFLAGS = -O2 -std=c++17 -DUNICODE -D_UNICODE -DNOMINMAX $(INC) -Wno-attributes
@@ -22,20 +22,17 @@ CXX64 = x86_64-w64-mingw32-g++
 
 all: bin/x86/kpineogeo.kpi bin/x64/kpineogeo.kpi
 
-$(SDK)/kpi.h:
-	@echo "KbMedia Player SDK headers not found. Run scripts/fetch-kpisdk.sh first." && false
-
-bin/x86/kpineogeo.kpi: $(SDK)/kpi.h $(SRCS) third_party/z80/z80.c $(HDRS)
+bin/x86/kpineogeo.kpi: $(SRCS) third_party/z80/z80.c $(HDRS)
 	mkdir -p bin/x86 obj/x86
 	$(CC32) -O2 -c third_party/z80/z80.c -o obj/x86/z80.o
 	$(CXX32) $(CXXFLAGS) $(SRCS) obj/x86/z80.o kpineogeo.def -o $@ $(LDFLAGS) -lshell32
 
-bin/x64/kpineogeo.kpi: $(SDK)/kpi.h $(SRCS) third_party/z80/z80.c $(HDRS)
+bin/x64/kpineogeo.kpi: $(SRCS) third_party/z80/z80.c $(HDRS)
 	mkdir -p bin/x64 obj/x64
 	$(CC64) -O2 -c third_party/z80/z80.c -o obj/x64/z80.o
 	$(CXX64) $(CXXFLAGS) $(SRCS) obj/x64/z80.o kpineogeo.def -o $@ $(LDFLAGS) -lshell32
 
-tools: $(SDK)/kpi.h
+tools:
 	mkdir -p bin
 	$(CXX64) $(CXXFLAGS) -municode -static tools/kpihost.cpp -o bin/kpihost64.exe
 	$(CXX32) $(CXXFLAGS) -municode -static tools/kpihost.cpp -o bin/kpihost32.exe
@@ -54,6 +51,7 @@ package: all
 	cp LICENSE obj/pkg/kpineogeo/licenses/kpineogeo_LICENSE.txt
 	cp third_party/ymfm/LICENSE obj/pkg/kpineogeo/licenses/ymfm_LICENSE.txt
 	cp third_party/z80/LICENSE obj/pkg/kpineogeo/licenses/z80_LICENSE.txt
+	cp THIRD_PARTY_NOTICES.md obj/pkg/kpineogeo/licenses/
 	cd obj/pkg && rm -f ../../dist/kpineogeo_v$(VERSION).zip && zip -qr ../../dist/kpineogeo_v$(VERSION).zip kpineogeo
 
 clean:

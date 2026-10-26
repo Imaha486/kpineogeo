@@ -18,23 +18,42 @@
 #include "kpi_decoder.h"
 #include "kpi_impl.h"
 #include "kmp_pi.h"
-#include "kpi_mingw_uuid.h"
+#include "kpi_gcc_uuid.h"
+
+// helper implemented in the SDK (third_party/kpisdk/kpi.cpp, built via src/kpi_sdk.cpp)
+extern DWORD WINAPI kpi_CreateConfig(IKpiUnknown* pUnknown, const GUID* pGUID, DWORD* pdwPlatform, IKpiConfig** ppConfig);
 
 #include "neoplayer.h"
 #include "romfind.h"
+#include "neocrypt.h"
 
-#define KPINEOGEO_VERSION 0x00010002   // 1.02
+#define KPINEOGEO_VERSION 0x00010004   // 1.04
 #define SCAN_VERSION 2
 
 static HMODULE g_hModule;
+
+// ---------------------------------------------------------------------------
+// plugin settings: stored by KbMedia Player through IKpiConfig
+// ("Tools" -> "Plugin settings" -> kpineogeo.kpi). Defaults are used when the host
+// does not provide IKpiConfig.
+// ---------------------------------------------------------------------------
+static IKpiConfig* g_cfg = nullptr;
+static const wchar_t* const CFG_SECTION = L"General";
+
+static INT64 CfgInt(const wchar_t* key, INT64 def)
+{
+    return g_cfg ? g_cfg->GetInt(CFG_SECTION, key, def) : def;
+}
+static double CfgFloat(const wchar_t* key, double def)
+{
+    return g_cfg ? g_cfg->GetFloat(CFG_SECTION, key, def) : def;
+}
 static std::wstring IniPath();
 
 // debug log: [General] Debug=1 -> %TEMP%\kpineogeo.log
 static void Log(const wchar_t* fmt, ...)
 {
-    static int enabled = -1;
-    if (enabled < 0) enabled = (int)GetPrivateProfileIntW(L"General", L"Debug", 0, IniPath().c_str());
-    if (!enabled) return;
+    if (CfgInt(L"Debug", 0) == 0) return;
     wchar_t buf[2048];
     va_list ap; va_start(ap, fmt);
     _vsnwprintf(buf, 2047, fmt, ap); buf[2047] = 0;
@@ -43,7 +62,7 @@ static void Log(const wchar_t* fmt, ...)
     GetTempPathW(MAX_PATH, tmp);
     FILE* f = _wfopen((std::wstring(tmp) + L"kpineogeo.log").c_str(), L"a, ccs=UTF-8");
     if (!f) return;
-    fwprintf(f, L"[%lu] %ls\n", GetCurrentThreadId(), buf);
+    fwprintf(f, L"%8lu [%lu] %ls\n", GetTickCount() % 100000000, GetCurrentThreadId(), buf);
     fclose(f);
 }
 
@@ -65,16 +84,6 @@ static std::wstring IniStr(const wchar_t* sec, const wchar_t* key, const wchar_t
     wchar_t buf[4096];
     GetPrivateProfileStringW(sec, key, def, buf, 4096, IniPath().c_str());
     return buf;
-}
-static int IniInt(const wchar_t* sec, const wchar_t* key, int def)
-{
-    return (int)GetPrivateProfileIntW(sec, key, def, IniPath().c_str());
-}
-static double IniDouble(const wchar_t* sec, const wchar_t* key, double def)
-{
-    std::wstring s = IniStr(sec, key);
-    if (s.empty()) return def;
-    return _wtof(s.c_str());
 }
 
 // "fd,0x10 20" -> bytes
@@ -188,7 +197,7 @@ static ScanResult GetScan(NeoRomSet& roms, const NeoDriverProfile& prof, bool in
     auto it = g_cache.find(key);
     if (it != g_cache.end()) return it->second;
     ScanResult r;
-    const bool useFile = IniInt(L"General", L"Cache", 1) != 0;
+    const bool useFile = CfgInt(L"Cache", 1) != 0;
     if (!useFile || !LoadCacheFile(key, r))
     {
         loadV();
@@ -269,6 +278,8 @@ private:
     std::wstring m_album;
     std::wstring m_m1Name;
     std::string m_driver;
+    NeoCryptInfo m_crypt;
+    UINT64 m_rendered = 0;
 };
 
 DWORD NeoDecoder::Open(const KPI_MEDIAINFO* cpRequest, IKpiFile* pFile, IKpiFolder* pFolder)
@@ -291,6 +302,14 @@ DWORD NeoDecoder::Open(const KPI_MEDIAINFO* cpRequest, IKpiFile* pFile, IKpiFold
     swprintf(sec, 16, L"%08X", crc);
     m_section = sec;
 
+    // encrypted sets (CMC50 M1 / NEO-PCM2 V: KOF2000 and later)
+    {
+        std::wstring c = IniStr(sec, L"Crypt", L"auto");
+        const int mode = (c == L"none") ? 0 : (c == L"cmc50") ? 2 : 1;
+        m_crypt = NeoPrepareM1(m_roms.m1, crc, mode);
+        if (m_crypt.cmc50) Log(L"  CMC50 M1 decrypted (%hs), V: type %d value %d", m_crypt.name, m_crypt.pcm2Type, m_crypt.pcm2Value);
+    }
+
     // driver profile (+ per-game override)
     m_prof = DetectDriver(m_roms.m1);
     std::wstring s = IniStr(sec, L"Init", L"*");
@@ -305,7 +324,9 @@ DWORD NeoDecoder::Open(const KPI_MEDIAINFO* cpRequest, IKpiFile* pFile, IKpiFold
         if (r.size() >= 2) { m_prof.firstCode = r[0]; m_prof.lastCode = r[1]; }
     }
 
-    m_gain = IniDouble(L"General", L"Gain", 1.5);
+    m_gain = CfgFloat(L"Gain", 1.5);
+    if (m_gain < 0.1) m_gain = 0.1;
+    if (m_gain > 8.0) m_gain = 8.0;
     m_album = IniStr(sec, L"Album");
     if (m_album.empty() && pFolder)
     {
@@ -343,16 +364,20 @@ DWORD NeoDecoder::Open(const KPI_MEDIAINFO* cpRequest, IKpiFile* pFile, IKpiFold
         };
         load(la, m_roms.va);
         load(lb, m_roms.vb);
+        NeoPrepareV(m_roms.va, m_crypt);
+        NeoPrepareV(m_roms.vb, m_crypt);
     };
 
     // song list (and the driver's init commands, which the scan determines)
-    const double win = IniDouble(L"General", L"ScanSeconds", 6.0);
+    double win = CfgFloat(L"ScanSeconds", 6.0);
+    if (win < 3.0) win = 3.0;
+    if (win > 30.0) win = 30.0;
     ScanResult scan = GetScan(m_roms, m_prof, initForced, crc, win, loadV);
     m_prof.initCmds = scan.init;
     m_prof.prefix = scan.prefix;
     m_driver = scan.driver;
-    m_tracks = NeoMakeTrackList(scan.songs, IniInt(L"General", L"ListMode", 0),
-                                IniInt(L"General", L"Dedupe", 1) != 0);
+    m_tracks = NeoMakeTrackList(scan.songs, (int)CfgInt(L"ListMode", 0),
+                                CfgInt(L"Dedupe", 1) != 0);
 
     std::wstring codes = IniStr(sec, L"Codes");
     if (!codes.empty())
@@ -379,7 +404,7 @@ DWORD NeoDecoder::Open(const KPI_MEDIAINFO* cpRequest, IKpiFile* pFile, IKpiFold
     {
         loadV();
         if (cpRequest->dwSampleRate) m_rate = cpRequest->dwSampleRate;
-        else m_rate = (uint32_t)IniInt(L"General", L"SampleRate", 48000);
+        else m_rate = (uint32_t)CfgInt(L"SampleRate", 48000);
         if (m_rate < 8000) m_rate = 8000;
         if (m_rate > 192000) m_rate = 192000;
         m_player.reset(new NeoPlayer(&m_roms, m_prof, m_rate, m_gain));
@@ -419,7 +444,7 @@ void NeoDecoder::setTags(IKpiTagInfo* t, DWORD flags, int index)
     if (flags & KPI_TAGGET_FLAG_COMMENT)
     {
         wchar_t c[128];
-        swprintf(c, 128, L"sound code 0x%02X / driver: %hs", tr.code, m_driver.c_str());
+        swprintf(c, 128, L"sound code 0x%02X / driver: %hs%hs / M1 CRC32 %ls", tr.code, m_driver.c_str(), m_crypt.cmc50 ? " (CMC50)" : "", m_section.c_str());
         t->wSetValueW(SZ_KMP_NAME_COMMENT_W, -1, c, -1);
     }
 }
@@ -473,6 +498,7 @@ UINT64 NeoDecoder::Seek(UINT64 qwPosSample, DWORD)
     Log(L"Seek %llu player=%p cur=%d", (unsigned long long)qwPosSample, m_player.get(), m_cur);
     if (!m_player || m_cur < 0) return 0;
     m_started = true;
+    m_rendered = qwPosSample;
     if (qwPosSample == 0) { m_player->start(m_tracks[m_cur]); return 0; }
     m_player->start(m_tracks[m_cur]);   // seek() restarts from the track it was given
     return m_player->seek(qwPosSample);
@@ -497,7 +523,12 @@ DWORD NeoDecoder::Render(BYTE* pBuffer, DWORD dwSizeSample)
         }
         return done;
     }
-    return m_player->render(reinterpret_cast<float*>(pBuffer), dwSizeSample);
+    const DWORD r = m_player->render(reinterpret_cast<float*>(pBuffer), dwSizeSample);
+    m_rendered += r;
+    if (r < dwSizeSample || (m_rendered / m_rate) != ((m_rendered - r) / m_rate) && (m_rendered / m_rate) % 10 == 0)
+        Log(L"Render track %d: %llu samples (%.1f s)%ls", m_cur + 1, (unsigned long long)m_rendered,
+            double(m_rendered) / m_rate, r < dwSizeSample ? L" END" : L"");
+    return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -516,12 +547,12 @@ static KPI_DECODER_MODULEINFO g_info = {
     KPI_MULTINST_INFINITE,
     KPINEOGEO_GUID,
     L"NEOGEO sound ROM (M1+V) decoder plugin  - Z80 + YM2610 (ymfm) emulation",
-    L"kpineogeo (c) 2026 / ymfm (c) Aaron Giles (BSD-3) / z80 (c) Nicolas Allemand (MIT)",
+    L"kpineogeo (c) 2026 / ymfm (c) Aaron Giles (BSD-3) / z80 (c) Nicolas Allemand (MIT) / CMC50,PCM2 decryption from MAME (BSD-3) / KbMedia Player SDK (c) Kobarin",
     SUPPORT_EXTS,
     SUPPORT_EXTS,
     nullptr, nullptr,
     KPI_DECODER_MODULEINFO::TAG_TITLE,
-    0,
+    1,                                  // settings via IKpiConfig
     { 0, 0, 0, 0 }
 };
 
@@ -541,10 +572,38 @@ public:
         *ppDecoder = d;
         return n;
     }
-    BOOL WINAPI EnumConfig(IKpiConfigEnumerator*) override { return FALSE; }
+    BOOL WINAPI EnumConfig(IKpiConfigEnumerator* e) override
+    {
+        KPI_CFG_SECTION sec = { CFG_SECTION, L"NEOGEO サウンド",
+            L"ゲームごとの曲名・曲リスト等は kpineogeo.kpi と同じフォルダの kpineogeo.ini に書きます" };
+        e->EnumSection(&sec);
+        auto key = [&](DWORD type, const wchar_t* k, const wchar_t* desc, const wchar_t* def,
+                       const wchar_t* mn, const wchar_t* mx, const wchar_t* list,
+                       const wchar_t* listDesc, const wchar_t* help) {
+            KPI_CFG_KEY c = { type, CFG_SECTION, k, desc, def, mn, mx, list, listDesc, help };
+            e->EnumKey(&c);
+        };
+        key(KPI_CFG_TYPE_INT, L"ListMode", L"曲一覧に含めるもの", L"0", nullptr, nullptr,
+            L"0\t1", L"BGM とジングル\t効果音・ボイスも含めて全部",
+            L"自動検出したサウンドコードのうち、どれを曲として一覧に出すか");
+        key(KPI_CFG_TYPE_BOOL, L"Dedupe", L"同じ曲になるコードをまとめる", L"1", nullptr, nullptr,
+            nullptr, nullptr, L"別のサウンドコードでも同じ曲が鳴る場合は 1 曲にまとめる");
+        key(KPI_CFG_TYPE_FLOAT, L"Gain", L"音量の倍率", L"1.5", L"0.1", L"8.0", nullptr, nullptr, nullptr);
+        key(KPI_CFG_TYPE_FLOAT, L"ScanSeconds", L"BGM とみなす秒数", L"6.0", L"3.0", L"30.0", nullptr, nullptr,
+            L"曲の自動検出で、この秒数を超えて鳴り続けたものを BGM(ループ曲)とみなす");
+        key(KPI_CFG_TYPE_INT, L"SampleRate", L"既定の出力周波数", L"48000", L"8000", L"192000",
+            L"44100\t48000\t55556\t96000", nullptr,
+            L"本体から周波数の指定がないときの出力周波数 (55556 は実機の YM2610 と同じ)");
+        key(KPI_CFG_TYPE_BOOL, L"Cache", L"検出結果をキャッシュする", L"1", nullptr, nullptr, nullptr, nullptr,
+            L"曲の自動検出結果を %LOCALAPPDATA%\\kpineogeo に保存して、次回から検出を省略する");
+        key(KPI_CFG_TYPE_BOOL, L"Debug", L"動作ログを出力する", L"0", nullptr, nullptr, nullptr, nullptr,
+            L"%TEMP%\\kpineogeo.log に動作ログを出力する(不具合調査用)");
+        return TRUE;
+    }
     DWORD WINAPI ApplyConfig(const wchar_t*, const wchar_t*, INT64, double, const wchar_t*) override
     {
-        return KPI_CFGRET_OK;
+        // all settings take effect the next time a file is opened
+        return KPI_CFGRET_RELOAD_DATA;
     }
 };
 
@@ -555,13 +614,21 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD reason, LPVOID)
         g_hModule = (HMODULE)hModule;
         DisableThreadLibraryCalls((HMODULE)hModule);
     }
+    else if (reason == DLL_PROCESS_DETACH && g_cfg)
+    {
+        g_cfg->Release();
+        g_cfg = nullptr;
+    }
     return TRUE;
 }
 
-extern "C" HRESULT WINAPI kpi_CreateInstance(REFIID riid, void** ppvObject, IKpiUnknown*)
+extern "C" HRESULT WINAPI kpi_CreateInstance(REFIID riid, void** ppvObject, IKpiUnknown* pUnknown)
 {
     if (IsEqualIID(riid, IID_IKpiDecoderModule))
     {
+        // IKpiConfig has to be obtained before returning from here (SDK rule)
+        if (!g_cfg && pUnknown)
+            kpi_CreateConfig(pUnknown, &KPINEOGEO_GUID, nullptr, &g_cfg);
         *ppvObject = static_cast<IKpiDecoderModule*>(new NeoDecoderModule());
         return S_OK;
     }

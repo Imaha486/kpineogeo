@@ -20,8 +20,9 @@ NEOGEO のサウンド基板（Z80 4MHz + YM2610 8MHz）をエミュレートし
 - ADK サウンドドライバ（ティンクルスタースプライツ等）を自動判別
 - SNK 標準系ドライバの「0x07 を受けるまで無音」仕様を自動判定（パルスター、アイアンクラッド等）
 - ADPCM ストリーム BGM も検出（曲の検出時に実際に音を合成して判定）
+- 暗号化された後期タイトル（CMC50 M1 / NEO-PCM2 V: KOF2002 など）を自動で復号
 - 32bit float ステレオ出力、サンプル単位の正確なシーク
-- ゲームごとの曲名・曲リストを ini で指定可能
+- 全体の設定は KbMedia Player の「プラグイン設定」画面（IKpiConfig）で変更、ゲームごとの曲名・曲リストは ini で指定
 - 32bit / 64bit 版 KbMedia Player に対応（新プラグイン仕様 `kpi_CreateInstance`）
 
 ## 使い方
@@ -33,24 +34,17 @@ NEOGEO のサウンド基板（Z80 4MHz + YM2610 8MHz）をエミュレートし
 
 ## ビルド
 
-### 1. SDK ヘッダの用意
+KbMedia Player プラグイン SDK（KbMedia Player 同梱の `kpisdk.7z`、2017/03/06 版）の必要なファイルを
+`third_party/kpisdk/` に同梱しているので、ビルド時に外部から何かを取得することはありません。
 
-KbMedia Player プラグイン SDK は同梱していません（[third_party/kpisdk/README.md](third_party/kpisdk/README.md)）。
-
-```sh
-scripts/fetch-kpisdk.sh /path/to/KbMediaPlayer/SDK/kpisdk.7z   # KbMedia Player 同梱の SDK から
-# または
-scripts/fetch-kpisdk.sh                                         # auPiECE.kpi の UTF-8 版をダウンロード
-```
-
-### 2a. MinGW-w64（Linux / MSYS2）
+### MinGW-w64（Linux / MSYS2）
 
 ```sh
 make            # bin/x86/kpineogeo.kpi, bin/x64/kpineogeo.kpi
 make package    # dist/kpineogeo_vX.XX.zip
 ```
 
-### 2b. Visual Studio 2022
+### Visual Studio 2022
 
 ```sh
 cmake -S . -B build-x64 -A x64   && cmake --build build-x64 --config Release
@@ -73,8 +67,9 @@ bin/scan 224-m1.bin 224-v1.bin 224-v2.bin
 bin/rip  224-m1.bin 224-v1.bin 224-v2.bin 0x1c 30 out.wav 0xfd
 ```
 
-デバッグ時は ini の `[General]` に `Debug=1` を書くと `%TEMP%\kpineogeo.log` に
+デバッグ時はプラグイン設定の「動作ログを出力する」を有効にすると `%TEMP%\kpineogeo.log` に
 Open/Select/Seek の呼び出しや V ROM の検索結果が出力されます。
+`kpihost` では `-c Debug=1` のように設定を渡せます。
 
 ## ソース構成
 
@@ -85,18 +80,20 @@ src/
   songscan.*        ドライバ判別と曲の自動検出（キー・オン監視、マルチスレッド）
   neoplayer.*       再生・リサンプリング（Catmull-Rom）・シーク
   romfind.*         M1 / V ROM のファイル名判定と検索
-  kpi_mingw_uuid.h  MinGW 用 __uuidof シム
+  neocrypt.*        CMC50 (M1) / NEO-PCM2 (V) の復号（MAME 由来）
+  kpi_gcc_uuid.h    MinGW 用 __uuidof 宣言（SDK の GUID から生成）
+  kpi_sdk.cpp       SDK のヘルパー関数（kpi.cpp）をビルドするためのラッパー
 third_party/
   ymfm/             YM2610 エミュレーション（Aaron Giles, BSD-3-Clause, 無改変）
   z80/              Z80 エミュレーション（Nicolas Allemand, MIT, 16bit I/O ポート対応に改変）
-  kpisdk/           KbMedia Player SDK を置く場所（同梱なし）
+  kpisdk/           KbMedia Player SDK（同梱、© Kobarin）
 tools/              検証用ツール
 dist/               配布用 readme / ini サンプル
 ```
 
 ## 既知の制限
 
-- 暗号化された M1/V（CMC50 系の後期タイトルなど）は未対応
+- 暗号化 V ROM の復号は MAME に登録されている既知のセットのみ（M1 の CRC32 で判別）
 - 曲の検出はヒューリスティック。拾えない曲がある場合は ini の `Codes=` で指定してください
 - ドライバ別の対応は ADK と SNK 標準系（0x07 有効化）のみ。それ以外は汎用処理
 
